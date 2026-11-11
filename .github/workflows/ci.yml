@@ -47,7 +47,9 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "services=${ALL_SERVICES}" >> "$GITHUB_OUTPUT"
           else
-            echo 'services=${{ toJSON(steps.filter.outputs.changes) }}' | tr -d '\n ' >> "$GITHUB_OUTPUT"; echo >> "$GITHUB_OUTPUT"
+            # paths-filter already gives a JSON array such as ["web"]; pass it on unchanged
+            CHANGED='${{ steps.filter.outputs.changes }}'
+            echo "services=${CHANGED:-[]}" >> "$GITHUB_OUTPUT"
           fi
 
   # ------------------------------------------------------------------ tests
