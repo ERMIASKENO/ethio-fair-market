@@ -105,3 +105,4 @@ label.check input { width: auto; }
 .footer { border-top: 1px solid var(--line); padding: 20px 0; background: #fff; }
 
 .demo-banner { background: var(--yellow); color: var(--ink); text-align: center; padding: 6px 12px; font-size: 0.85rem; font-weight: 600; }
+/* rebuilt 2026-11-11 after CI fix */
