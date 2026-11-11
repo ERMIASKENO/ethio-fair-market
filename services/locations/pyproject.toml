@@ -1,0 +1,9 @@
+[project]
+name = "efm-locations"
+version = "1.0.0"
+description = "Ethiopian regions, cities and sub-cities"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]

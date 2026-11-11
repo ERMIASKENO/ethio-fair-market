@@ -1,0 +1,237 @@
+# CI/CD for ethio-fair-market
+#   pull request : test changed services, build images (no push)
+#   push to main : test -> build -> push to ghcr.io -> vulnerability scan -> bump image tag in the GitOps repo
+#                  (Argo CD then rolls the new version out to the cluster)
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch: # "Run workflow" button: builds every service
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  IMAGE_PREFIX: ghcr.io/ermiaskeno/efm
+  GITOPS_REPO: ERMIASKENO/ethio-fair-market-gitops
+  ALL_SERVICES: '["identity","listings","catalog","locations","web"]'
+
+jobs:
+  # ------------------------------------------------------------------ which services changed?
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      services: ${{ steps.out.outputs.services }}
+      go: ${{ steps.filter.outputs.identity == 'true' || steps.filter.outputs.listings == 'true' || github.event_name == 'workflow_dispatch' }}
+      node: ${{ steps.filter.outputs.catalog == 'true' || steps.filter.outputs.web == 'true' || github.event_name == 'workflow_dispatch' }}
+      python: ${{ steps.filter.outputs.locations == 'true' || github.event_name == 'workflow_dispatch' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            identity:  ['services/identity/**', 'libs/go/kit/**']
+            listings:  ['services/listings/**', 'libs/go/kit/**']
+            catalog:   ['services/catalog/**']
+            locations: ['services/locations/**']
+            web:       ['web/**']
+      - id: out
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "services=${ALL_SERVICES}" >> "$GITHUB_OUTPUT"
+          else
+            echo 'services=${{ toJSON(steps.filter.outputs.changes) }}' | tr -d '\n ' >> "$GITHUB_OUTPUT"; echo >> "$GITHUB_OUTPUT"
+          fi
+
+  # ------------------------------------------------------------------ tests
+  test-go:
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache-dependency-path: '**/go.sum'
+      - name: create test databases
+        run: |
+          export PGPASSWORD=test
+          for db in identity listings; do
+            psql -h localhost -U postgres -c "CREATE DATABASE $db"
+          done
+      - name: vet + test (unit and Postgres integration)
+        run: |
+          set -e
+          (cd libs/go/kit && go vet ./... && go test -race ./...)
+          for svc in identity listings; do
+            (cd services/$svc && go vet ./... && \
+             TEST_DATABASE_URL="postgres://postgres:test@localhost:5432/$svc?sslmode=disable" go test -race -count=1 ./...)
+          done
+
+  test-node:
+    needs: changes
+    if: needs.changes.outputs.node == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        dir: [services/catalog, web]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: ${{ matrix.dir }}/package-lock.json
+      - run: npm ci --no-audit --no-fund
+        working-directory: ${{ matrix.dir }}
+      - run: npm run lint && npm test
+        working-directory: ${{ matrix.dir }}
+      - name: dependency audit (high and critical)
+        run: npm audit --omit=dev --audit-level=high
+        working-directory: ${{ matrix.dir }}
+
+  test-python:
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: services/locations/requirements*.txt
+      - run: pip install -r requirements-dev.txt && python -m pytest -q
+        working-directory: services/locations
+
+  # ------------------------------------------------------------------ images
+  build:
+    needs: [changes, test-go, test-node, test-python]
+    if: >-
+      always() && needs.changes.outputs.services != '[]' && needs.changes.outputs.services != '' &&
+      !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write      # push to ghcr.io
+      id-token: write      # signed build provenance
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJSON(needs.changes.outputs.services) }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dockerfile path
+        id: df
+        run: |
+          if [ "${{ matrix.service }}" = "web" ]; then echo "file=web/Dockerfile" >> "$GITHUB_OUTPUT"
+          else echo "file=services/${{ matrix.service }}/Dockerfile" >> "$GITHUB_OUTPUT"; fi
+          echo "version=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ${{ env.IMAGE_PREFIX }}-${{ matrix.service }}
+          tags: |
+            type=sha,prefix=,format=short
+            type=raw,value=main,enable={{is_default_branch}}
+      - uses: docker/build-push-action@v6
+        id: push
+        with:
+          context: .
+          file: ${{ steps.df.outputs.file }}
+          target: runtime
+          platforms: linux/amd64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: VERSION=${{ steps.df.outputs.version }}
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+          provenance: mode=max
+          sbom: true
+      - name: vulnerability scan (report only for now)
+        if: github.event_name != 'pull_request'
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ env.IMAGE_PREFIX }}-${{ matrix.service }}:${{ steps.df.outputs.version }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '0'
+        env:
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+      - name: build provenance attestation
+        if: github.event_name != 'pull_request'
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.IMAGE_PREFIX }}-${{ matrix.service }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+  # ------------------------------------------------------------------ GitOps: tell Argo CD about the new images
+  deploy-dev:
+    needs: [changes, build]
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    concurrency: gitops-dev   # one tag bump at a time
+    env:
+      GITOPS_TOKEN: ${{ secrets.GITOPS_TOKEN }}
+    steps:
+      - name: check token
+        run: |
+          if [ -z "$GITOPS_TOKEN" ]; then
+            echo "::warning::secret GITOPS_TOKEN is not set - images were pushed, but the GitOps repo was not updated"
+          fi
+      - uses: actions/checkout@v4
+        if: env.GITOPS_TOKEN != ''
+        with:
+          repository: ${{ env.GITOPS_REPO }}
+          token: ${{ secrets.GITOPS_TOKEN }}
+          path: gitops
+      - name: bump image tags in environments/dev
+        if: env.GITOPS_TOKEN != ''
+        working-directory: gitops
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_SHA::7}"
+          for svc in $(echo '${{ needs.changes.outputs.services }}' | jq -r '.[]'); do
+            f="environments/dev/services/${svc}.yaml"
+            [ -f "$f" ] || { echo "::warning::$f not found, skipping"; continue; }
+            yq -i ".image.tag = \"${TAG}\"" "$f"
+            echo "$svc -> $TAG"
+          done
+          git config user.name  "efm-ci"
+          git config user.email "efm-ci@users.noreply.github.com"
+          git add environments/dev/services
+          if git diff --cached --quiet; then echo "nothing to update"; exit 0; fi
+          git commit -m "deploy(dev): $(echo '${{ needs.changes.outputs.services }}' | jq -r 'join(", ")') -> ${TAG}" \
+                     -m "source: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}"
+          for _ in 1 2 3 4 5; do
+            git push && exit 0
+            git pull --rebase
+          done
+          exit 1
