@@ -6,9 +6,13 @@ import { getLang, getSession } from '@/lib/api';
 import { DICTS } from '@/lib/i18n';
 import './globals.css';
 
+// DEMO_MODE=true (set in the GitOps repo): visible banner + keep search engines away
+const DEMO = process.env.DEMO_MODE === 'true';
+
 export const metadata: Metadata = {
   title: { default: 'Ethio Fair Market', template: '%s · Ethio Fair Market' },
   description: 'Buy and sell anything in Ethiopia – cars, houses, phones, jobs and more.',
+  ...(DEMO ? { robots: { index: false, follow: false } } : {}),
 };
 
 export const viewport: Viewport = { width: 'device-width', initialScale: 1, themeColor: '#078930' };
@@ -20,6 +24,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   return (
     <html lang={lang}>
       <body>
+        {DEMO && <div className="demo-banner" role="note">⚠️ {t.demoBanner}</div>}
         <header className="topbar">
           <div className="container topbar-inner">
             <Link href="/" className="logo" aria-label={t.home}>

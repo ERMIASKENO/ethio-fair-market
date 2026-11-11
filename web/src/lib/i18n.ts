@@ -71,6 +71,7 @@ const en = {
   notFound: 'This ad does not exist or was removed.',
   home: 'Home',
   footer: 'Made for Ethiopia – Addis Ababa, Adama, Bahir Dar, Hawassa, Mekelle and everywhere in between.',
+  demoBanner: 'Demo version – ads and accounts are test data and may be deleted at any time. Do not enter real personal information.',
 };
 
 export type Dict = typeof en;
@@ -143,6 +144,7 @@ const am: Dict = {
   notFound: 'ይህ ማስታወቂያ የለም ወይም ተሰርዟል።',
   home: 'መነሻ',
   footer: 'ለኢትዮጵያ የተሰራ – አዲስ አበባ፣ አዳማ፣ ባሕር ዳር፣ ሀዋሳ፣ መቀሌ እና በመላው ሀገሪቱ።',
+  demoBanner: 'የሙከራ ስሪት – ማስታወቂያዎችና አካውንቶች የሙከራ መረጃዎች ናቸው፣ በማንኛውም ጊዜ ሊሰረዙ ይችላሉ። እውነተኛ የግል መረጃ አያስገቡ።',
 };
 
 export const DICTS: Record<Lang, Dict> = { en, am };

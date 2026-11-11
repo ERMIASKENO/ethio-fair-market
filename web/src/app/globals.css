@@ -103,3 +103,5 @@ label.check input { width: auto; }
 .row-actions { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap; }
 
 .footer { border-top: 1px solid var(--line); padding: 20px 0; background: #fff; }
+
+.demo-banner { background: var(--yellow); color: var(--ink); text-align: center; padding: 6px 12px; font-size: 0.85rem; font-weight: 600; }
